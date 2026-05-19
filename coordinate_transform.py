@@ -36,7 +36,10 @@ def rot_z(rad: float) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def pose6d_to_transform(pose_mm_deg: list) -> np.ndarray:
+def pose6d_to_transform(
+    pose_mm_deg: list,
+    use_rotation: bool = True,
+) -> np.ndarray:
     """
     将 6D pose 转换成 4x4 齐次变换矩阵。
     Convert 6D pose to 4x4 homogeneous transform.
@@ -63,7 +66,10 @@ def pose6d_to_transform(pose_mm_deg: list) -> np.ndarray:
     ry = np.deg2rad(ry_deg)
     rz = np.deg2rad(rz_deg)
 
-    R = rot_z(rz) @ rot_y(ry) @ rot_x(rx)
+    if use_rotation:
+        R = rot_z(rz) @ rot_y(ry) @ rot_x(rx)
+    else:
+        R = np.eye(3, dtype=np.float64)
 
     T = np.eye(4, dtype=np.float64)
     T[:3, :3] = R
@@ -118,6 +124,8 @@ def read_tm12_base_pose(robot, fallback_pose=None) -> list:
 def build_camera_to_base_matrix(
     camera_relative_pose_tcp: list,
     robot_tcp_pose_base: list,
+    use_base_aligned_tcp_rotation: bool = False,
+    camera_rotation_matrix_tcp=None,
 ) -> np.ndarray:
     """
     计算 T_base_camera。
@@ -138,8 +146,22 @@ def build_camera_to_base_matrix(
     Formula:
         T_base_camera = T_base_tcp @ T_tcp_camera
     """
-    T_base_tcp = pose6d_to_transform(robot_tcp_pose_base)
+    T_base_tcp = pose6d_to_transform(
+        robot_tcp_pose_base,
+        use_rotation=not use_base_aligned_tcp_rotation,
+    )
     T_tcp_camera = pose6d_to_transform(camera_relative_pose_tcp)
+
+    if camera_rotation_matrix_tcp is not None:
+        R_tcp_camera = np.array(camera_rotation_matrix_tcp, dtype=np.float64)
+
+        if R_tcp_camera.shape != (3, 3):
+            raise ValueError(
+                "camera_rotation_matrix_tcp must be a 3x3 matrix. "
+                f"Got shape {R_tcp_camera.shape}."
+            )
+
+        T_tcp_camera[:3, :3] = R_tcp_camera
 
     T_base_camera = T_base_tcp @ T_tcp_camera
 

@@ -43,15 +43,34 @@ RUN_FINAL_MARKING = False
 #   x/y/z: mm
 #   rx/ry/rz: degree
 P_CIRCLE_CENTER = [
-    -300.0, 750.0, 300.0, -90.0, 45.0, 0.0
+    -206.0, 900.0, 730.0, -90.0, 45, 0
 ]
 
-CIRCLE_RADIUS_MM = 150.0
-NUM_SCAN_POINTS = 5
+CIRCLE_RADIUS_MM = 100.0
+NUM_SCAN_POINTS = 7
 
 # 圆形轨迹所在平面与 global XY 平面平行。
 # Therefore only x/y change; z and orientation are copied from P_CIRCLE_CENTER.
 CIRCLE_START_ANGLE_DEG = 0.0 # 第一个扫描点从圆上的哪个角度开始。
+
+
+# ============================================================
+# Pre tasks before circle scan
+# ============================================================
+
+PRE_TASKS = [
+    # Placeholder pre-task poses. Motion supports "ptp" and "line".
+    {
+        "name": "pre_ptp_above_circle_center",
+        "motion": "ptp",
+        "pose": [-360.0, 630.0, 760.0, -90.0, 45.0, 0.0],
+    },
+    {
+        "name": "pre_line_small_offset",
+        "motion": "line",
+        "pose": [-330.0, 630.0, 760.0, -90.0, 45.0, 0.0],
+    },
+]
 
 
 # ============================================================
@@ -73,7 +92,7 @@ UPPER_GREEN = np.array([95, 255, 255], dtype=np.uint8) #HSV阈值上界
 # 过滤太小或太大的绿色区域。
 MIN_GREEN_AREA = 200   #最小绿色面积
 MAX_GREEN_AREA = 50000 #最大绿色面积
-MIN_CIRCULARITY = 0.25 #圆度
+MIN_CIRCULARITY = 0.40 #圆度
 
 ROI_REL = (0.05, 0.05, 0.95, 0.95)
 
@@ -93,7 +112,7 @@ MAX_DEPTH_MAD_MM = 20 #深度抖动的毫米mm
 # 是否显示 ZED 原始实时图像窗口。
 # Whether to show raw ZED live image window.
 SHOW_RAW_ZED_WINDOW = True
-
+ENABLE_PREVIEW_BEFORE_CAPTURE = True
 
 # ============================================================
 # Coordinate transform
@@ -111,8 +130,26 @@ SHOW_RAW_ZED_WINDOW = True
 #
 # 你之后需要根据机械安装或 hand-eye calibration 填写。
 CAMERA_RELATIVE_POSE_TCP = [                # 非常重要！！！要写。
-    0.0, 0.0, 100.0, 0.0, 0.0, 0.0
+    -21.15, 4.7, 178.85, 0.0, 0.0, 180.0
 ]
+
+# Direct ZED camera-axis mapping in TCP coordinates.
+# Rows compute TCP coordinates from camera coordinates:
+#   [x_T, y_T, z_T]^T = CAMERA_ROTATION_MATRIX_TCP @ [x_C, y_C, z_C]^T
+# This mapping is inferred from the latest P4/P5/P6 scan data:
+#   x_T ~= y_C, y_T ~= x_C, z_T ~= z_C
+CAMERA_ROTATION_MATRIX_TCP = [
+    [0.0, 1.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0],
+]
+
+# Coordinate transform debug mode.
+# Your Tool jog test showed Tool +X/+Y/+Z align with Base +X/+Y/+Z.
+# When this is True, main_script treats the TCP frame rotation as base-aligned:
+#   R_base_tcp = I
+# It still uses the TCP position [x, y, z] and still uses CAMERA_RELATIVE_POSE_TCP.
+USE_BASE_ALIGNED_TCP_ROTATION = True
 
 # 画笔相对于机械臂末端/TCP 的 6D pose。
 #

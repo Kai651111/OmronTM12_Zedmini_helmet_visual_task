@@ -40,7 +40,6 @@ from coordinate_transform import (
 )
 
 from robot_motion import (
-    move_ptp,
     generate_circle_scan_poses,
     execute_vertical_marking_motion,
 )
@@ -133,12 +132,151 @@ def wait_until_pose_reached(
 
         if elapsed > timeout_s:
             raise TimeoutError(
-                f"Robot did not reach target within {timeout_s:.1f}s. "
+                f"Robot did "
+                f"not reach target within {timeout_s:.1f}s. "
                 f"Last pos_error={pos_error_mm:.2f} mm, "
                 f"rot_error={rot_error_deg:.2f} deg"
             )
 
         time.sleep(check_interval_s)
+
+
+def read_current_tcp_pose(robot):
+    """Read current TCP pose as six floats."""
+    current_pose = robot.tcp_coord
+    return [float(v) for v in current_pose[:6]]
+
+
+def pose_error(current_pose, target_pose):
+    current_pos = np.array(current_pose[:3], dtype=np.float64)
+    target_pos = np.array(target_pose[:3], dtype=np.float64)
+    current_rot = np.array(current_pose[3:6], dtype=np.float64)
+    target_rot = np.array(target_pose[3:6], dtype=np.float64)
+
+    pos_error_mm = float(np.linalg.norm(current_pos - target_pos))
+    rot_error_deg = float(np.linalg.norm(current_rot - target_rot))
+    return pos_error_mm, rot_error_deg
+
+
+def ensure_pose_inside_safe_workspace(pose, label):
+    x, y, z, _, _, _ = pose
+
+    if not (
+        cfg.SAFE_X_RANGE[0] <= x <= cfg.SAFE_X_RANGE[1]
+        and cfg.SAFE_Y_RANGE[0] <= y <= cfg.SAFE_Y_RANGE[1]
+        and cfg.SAFE_Z_RANGE[0] <= z <= cfg.SAFE_Z_RANGE[1]
+    ):
+        raise ValueError(f"Unsafe {label} pose: {pose}")
+
+
+def send_motion_and_wait(
+    robot,
+    target_pose,
+    motion_type="ptp",
+    label="target",
+    position_tolerance_mm=2.0,
+    angle_tolerance_deg=5.0,
+    timeout_s=180.0,
+):
+    target_pose = [float(v) for v in target_pose[:6]]
+    motion_type = str(motion_type).lower()
+
+    ensure_pose_inside_safe_workspace(target_pose, label)
+
+    print(f"[ROBOT] {motion_type.upper()} to {label}:")
+    print(f"[ROBOT] target_pose = {target_pose}")
+    print(f"[ROBOT] ENABLE_ROBOT_MOVE = {cfg.ENABLE_ROBOT_MOVE}")
+
+    if motion_type == "ptp":
+        speed = int(cfg.PTP_SPEED_PERCENT)
+        print(f"[ROBOT] speed_percent = {speed}")
+    elif motion_type in ("line", "linemove", "linear"):
+        speed = int(round(cfg.LINE_SPEED_MM_S))
+        print(f"[ROBOT] speed_mm_s = {speed}")
+    else:
+        raise ValueError(f"Unsupported motion_type for {label}: {motion_type}")
+
+    input(
+        f"[PAUSE] Press Enter to send {motion_type.upper()} to {label}... "
+        f"/ Press Enter after checking workspace safety..."
+    )
+
+    if not cfg.ENABLE_ROBOT_MOVE:
+        print("[ROBOT] ENABLE_ROBOT_MOVE = False, skip real movement.")
+        return read_current_tcp_pose(robot)
+
+    current_pose = read_current_tcp_pose(robot)
+    pos_error_mm, rot_error_deg = pose_error(current_pose, target_pose)
+
+    if pos_error_mm <= position_tolerance_mm and rot_error_deg <= angle_tolerance_deg:
+        print(
+            f"[ROBOT] Already at {label} within tolerance; "
+            "skip sending zero-distance motion."
+        )
+        return current_pose
+
+    if motion_type == "ptp":
+        robot.ptp(
+            target_pose,
+            speed,
+            data_format="CPP",
+            blending=0,
+            precision_positioning="false",
+        )
+    else:
+        robot.line(
+            target_pose,
+            speed,
+            data_format="CAP",
+            blending=0,
+            precision_positioning="false",
+        )
+
+    print(f"[ROBOT] {motion_type.upper()} command to {label} sent.")
+
+    return wait_until_pose_reached(
+        robot,
+        target_pose,
+        position_tolerance_mm=position_tolerance_mm,
+        angle_tolerance_deg=angle_tolerance_deg,
+        timeout_s=timeout_s,
+    )
+
+
+def run_pre_tasks(robot):
+    pre_tasks = getattr(cfg, "PRE_TASKS", [])
+
+    if not pre_tasks:
+        print("[PRE] No PRE_TASKS configured.")
+        return read_current_tcp_pose(robot)
+
+    print("\n" + "-" * 80)
+    print(f"[3/7] Running pre tasks before circle scan: {len(pre_tasks)}")
+
+    tcp_pose_base = read_current_tcp_pose(robot)
+
+    for task_id, task in enumerate(pre_tasks, start=1):
+        name = task.get("name", f"pre_task_{task_id}")
+        motion_type = task.get("motion", "ptp")
+        pose = task["pose"]
+        label = f"PRE_TASK {task_id}: {name}"
+
+        print("\n" + "-" * 80)
+        print(f"[PRE] {label}")
+
+        tcp_pose_base = send_motion_and_wait(
+            robot=robot,
+            target_pose=pose,
+            motion_type=motion_type,
+            label=label,
+            position_tolerance_mm=2.0,
+            angle_tolerance_deg=5.0,
+            timeout_s=180.0,
+        )
+
+        time.sleep(SETTLE_SECONDS_AFTER_MOVE)
+
+    return tcp_pose_base
 
 
 # ============================================================
@@ -329,27 +467,42 @@ def main():
 
 
         # ----------------------------------------------------
-        # 3. Skip P_CIRCLE_CENTER move
-        # 3. 调试阶段：跳过圆心移动
+        # 3. Run pre tasks, then move to P_CIRCLE_CENTER
+        # 3. 前置任务完成后，移动到圆心参考点
         # ----------------------------------------------------
 
         print("\n" + "-" * 80)
-        print("[3/7] Skip moving to P_CIRCLE_CENTER.")
-        print("[3/7] 跳过移动到 P_CIRCLE_CENTER。")
+        print("[3/7] Pre tasks -> P_CIRCLE_CENTER.")
+        print("[3/7] Run configured pre tasks, then move to circle center.")
 
-        tcp_pose_base = robot.tcp_coord
-        tcp_pose_base = [float(v) for v in tcp_pose_base[:6]]
+        tcp_pose_base = read_current_tcp_pose(robot)
 
         print("[ROBOT] Current TCP pose:")
         print(tcp_pose_base)
 
         input("[PAUSE] Check robot current position, press Enter to continue... / 检查机器人当前位置，按回车继续...")
 
+        tcp_pose_base = run_pre_tasks(robot)
+
+        print("\n" + "-" * 80)
+        print("[3/7] Moving to P_CIRCLE_CENTER after pre tasks...")
+        print(f"[POSE] P_CIRCLE_CENTER = {cfg.P_CIRCLE_CENTER}")
+
+        tcp_pose_base = send_motion_and_wait(
+            robot=robot,
+            target_pose=cfg.P_CIRCLE_CENTER,
+            motion_type="ptp",
+            label="P_CIRCLE_CENTER",
+            position_tolerance_mm=2.0,
+            angle_tolerance_deg=5.0,
+            timeout_s=180.0,
+        )
+
         time.sleep(SETTLE_SECONDS_AFTER_MOVE)
 
         if SET_ZED_REFERENCE_AT_CIRCLE_CENTER:
-            print("[ZED] Setting P1 reference at current pose...")
-            print("[ZED] 在当前位置设置 ZED P1 参考位姿...")
+            print("[ZED] Setting P1 reference at P_CIRCLE_CENTER...")
+            print("[ZED] Reference is set after robot reaches circle center.")
 
             ok = zed.set_reference_from_current_pose()
 
@@ -378,40 +531,26 @@ def main():
         # ----------------------------------------------------
 
         print("\n" + "-" * 80)
-        print("[4/7] Using small Z-only debug scan poses...")
-        print("[4/7] 使用只增加 Z 的小范围调试扫描点...")
+        print("[4/7] Generating circular scan poses from config...")
+        print(
+            f"[4/7] center={cfg.P_CIRCLE_CENTER}, "
+            f"radius={cfg.CIRCLE_RADIUS_MM}, "
+            f"points={cfg.NUM_SCAN_POINTS}"
+        )
 
-        z_step_mm = 10.0
-        scan_poses = [
-            tcp_pose_base.copy(),
-            [
-                tcp_pose_base[0],
-                tcp_pose_base[1],
-                tcp_pose_base[2] + z_step_mm,
-                tcp_pose_base[3],
-                tcp_pose_base[4],
-                tcp_pose_base[5],
-            ],
-        ]
+        scan_poses = generate_circle_scan_poses(
+            center_pose=cfg.P_CIRCLE_CENTER,
+            radius_mm=cfg.CIRCLE_RADIUS_MM,
+            num_points=cfg.NUM_SCAN_POINTS,
+            start_angle_deg=cfg.CIRCLE_START_ANGLE_DEG,
+        )
 
         for i, pose in enumerate(scan_poses, start=1):
             print(f"[SCAN POSE] P{i}: {pose}")
-
-            x, y, z, _, _, _ = pose
-            if not (
-                cfg.SAFE_X_RANGE[0] <= x <= cfg.SAFE_X_RANGE[1]
-                and cfg.SAFE_Y_RANGE[0] <= y <= cfg.SAFE_Y_RANGE[1]
-                and cfg.SAFE_Z_RANGE[0] <= z <= cfg.SAFE_Z_RANGE[1]
-            ):
-                raise ValueError(f"Unsafe debug scan pose P{i}: {pose}")
+            ensure_pose_inside_safe_workspace(pose, f"scan P{i}")
 
         print(
-            "[SAFETY] Debug scan poses are inside configured safe workspace. "
-            f"Motion is Z-only, max +{z_step_mm:.1f} mm from current TCP."
-        )
-        print(
-            "[SAFETY] 调试扫描点均在配置的安全工作空间内。"
-            f"运动只增加 Z，最大相对当前 TCP +{z_step_mm:.1f} mm。"
+            "[SAFETY] Circular scan poses are inside configured safe workspace."
         )
         # ----------------------------------------------------
         # 5. Scan each point
@@ -465,7 +604,7 @@ def main():
 
                     robot.ptp(
                         target_pose,
-                        cfg.PTP_SPEED_PERCENT,
+                        int(cfg.PTP_SPEED_PERCENT),
                         data_format="CPP",
                         blending=0,
                         precision_positioning="false",
@@ -478,7 +617,7 @@ def main():
                         target_pose,
                         position_tolerance_mm=2.0,
                         angle_tolerance_deg=5.0,
-                        timeout_s=20.0,
+                        timeout_s=180.0,
                     )
 
             else:
@@ -508,7 +647,23 @@ def main():
             T_base_camera = build_camera_to_base_matrix(
                 camera_relative_pose_tcp=cfg.CAMERA_RELATIVE_POSE_TCP,
                 robot_tcp_pose_base=tcp_pose_base,
+                use_base_aligned_tcp_rotation=getattr(
+                    cfg,
+                    "USE_BASE_ALIGNED_TCP_ROTATION",
+                    False,
+                ),
+                camera_rotation_matrix_tcp=getattr(
+                    cfg,
+                    "CAMERA_ROTATION_MATRIX_TCP",
+                    None,
+                ),
             )
+
+            if getattr(cfg, "USE_BASE_ALIGNED_TCP_ROTATION", False):
+                print("[TRANSFORM] TCP rotation mode: base-aligned, R_base_tcp = I.")
+
+            if getattr(cfg, "CAMERA_ROTATION_MATRIX_TCP", None) is not None:
+                print("[TRANSFORM] Camera rotation mode: direct axis mapping matrix.")
 
             print("[TRANSFORM] T_base_camera ready.")
             print("[TRANSFORM] T_base_camera 已计算。")
@@ -536,7 +691,7 @@ def main():
                 zed=zed,
                 detector=detector,
                 capture_seconds=cfg.CAPTURE_SECONDS_PER_VIEW,
-                show_debug=False,
+                show_debug=True,
                 point_id=point_id,
             )
 
