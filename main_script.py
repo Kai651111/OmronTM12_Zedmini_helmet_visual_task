@@ -61,7 +61,7 @@ SETTLE_SECONDS_AFTER_MOVE = getattr(cfg, "SETTLE_SECONDS_AFTER_MOVE", 1.0)
 ENABLE_PREVIEW_BEFORE_CAPTURE = getattr(
     cfg,
     "ENABLE_PREVIEW_BEFORE_CAPTURE",
-    True,
+    False,
 )
 
 SET_ZED_REFERENCE_AT_CIRCLE_CENTER = getattr(
@@ -373,24 +373,46 @@ def main():
         #
         # # 生成一组扫描点：根据confiure.py里面的参数写。
         # ----------------------------------------------------
-        # 4. Use manually defined scan poses
-        # 4. 使用手动指定的 5 个扫描点
+        # 4. Use a tiny Z-only motion for connection debugging
+        # 4. 调试阶段：只沿 Z 方向小范围移动
         # ----------------------------------------------------
 
         print("\n" + "-" * 80)
-        print("[4/7] Using manually defined scan poses...")
-        print("[4/7] 使用手动指定的扫描点...")
+        print("[4/7] Using small Z-only debug scan poses...")
+        print("[4/7] 使用只增加 Z 的小范围调试扫描点...")
 
+        z_step_mm = 10.0
         scan_poses = [
-            [-193.0, 660.0, 598.7, -95.674, -45.122, 4.017],
-            [-173.0, 660.0, 598.7, -95.674, -45.122, 4.017],
-            [-153.0, 660.0, 598.7, -95.674, -45.122, 4.017],
-            [-133.0, 660.0, 598.7, -95.674, -45.122, 4.017],
-            [-113.0, 660.0, 598.7, -95.674, -45.122, 4.017],
+            tcp_pose_base.copy(),
+            [
+                tcp_pose_base[0],
+                tcp_pose_base[1],
+                tcp_pose_base[2] + z_step_mm,
+                tcp_pose_base[3],
+                tcp_pose_base[4],
+                tcp_pose_base[5],
+            ],
         ]
 
         for i, pose in enumerate(scan_poses, start=1):
             print(f"[SCAN POSE] P{i}: {pose}")
+
+            x, y, z, _, _, _ = pose
+            if not (
+                cfg.SAFE_X_RANGE[0] <= x <= cfg.SAFE_X_RANGE[1]
+                and cfg.SAFE_Y_RANGE[0] <= y <= cfg.SAFE_Y_RANGE[1]
+                and cfg.SAFE_Z_RANGE[0] <= z <= cfg.SAFE_Z_RANGE[1]
+            ):
+                raise ValueError(f"Unsafe debug scan pose P{i}: {pose}")
+
+        print(
+            "[SAFETY] Debug scan poses are inside configured safe workspace. "
+            f"Motion is Z-only, max +{z_step_mm:.1f} mm from current TCP."
+        )
+        print(
+            "[SAFETY] 调试扫描点均在配置的安全工作空间内。"
+            f"运动只增加 Z，最大相对当前 TCP +{z_step_mm:.1f} mm。"
+        )
         # ----------------------------------------------------
         # 5. Scan each point
         # 5. 逐点扫描：进入扫描循环
@@ -424,23 +446,40 @@ def main():
             )
 
             if cfg.ENABLE_ROBOT_MOVE:
-                robot.ptp(
-                    target_pose,
-                    cfg.PTP_SPEED_PERCENT,
-                    data_format="CPP",
-                    blending=0,
-                    precision_positioning="false",
-                )
+                current_before_move = robot.tcp_coord
+                current_before_move = [float(v) for v in current_before_move[:6]]
 
-                print(f"[ROBOT] robot.ptp() command to P{point_id} sent.")
+                current_pos = np.array(current_before_move[:3], dtype=np.float64)
+                target_pos = np.array(target_pose[:3], dtype=np.float64)
+                pre_move_error_mm = float(np.linalg.norm(current_pos - target_pos))
 
-                tcp_pose_base = wait_until_pose_reached(
-                    robot,
-                    target_pose,
-                    position_tolerance_mm=10.0,
-                    angle_tolerance_deg=10.0,
-                    timeout_s=180.0,
-                )
+                if pre_move_error_mm <= 2.0:
+                    print(
+                        "[ROBOT] Already at target within 2.0 mm; "
+                        "skip sending zero-distance PTP."
+                    )
+                    print("[ROBOT] 当前已在目标点 2.0 mm 内，跳过零距离 PTP。")
+                    tcp_pose_base = current_before_move
+                else:
+                    print(f"[ROBOT] Sending robot.ptp() command to P{point_id}...")
+
+                    robot.ptp(
+                        target_pose,
+                        cfg.PTP_SPEED_PERCENT,
+                        data_format="CPP",
+                        blending=0,
+                        precision_positioning="false",
+                    )
+
+                    print(f"[ROBOT] robot.ptp() command to P{point_id} sent.")
+
+                    tcp_pose_base = wait_until_pose_reached(
+                        robot,
+                        target_pose,
+                        position_tolerance_mm=2.0,
+                        angle_tolerance_deg=5.0,
+                        timeout_s=20.0,
+                    )
 
             else:
                 print("[ROBOT] ENABLE_ROBOT_MOVE = False, skip real movement.")
