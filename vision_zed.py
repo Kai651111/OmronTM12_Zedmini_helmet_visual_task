@@ -39,6 +39,12 @@ import numpy as np
 import pyzed.sl as sl
 import config as cfg
 
+from ellipsoid_boundary import (
+    draw_ellipsoid_projection_on_image,
+    is_ellipsoid_boundary_enabled,
+    is_point_inside_global_ellipsoid,
+)
+
 
 # ============================================================
 # 1. Configuration / 参数配置
@@ -271,6 +277,7 @@ class ZedCamera:
         self.sensors_data = sl.SensorsData()
 
         self.tracking_enabled = False
+        self.left_camera_intrinsics = None
 
         # T_reference_world = inverse(T_world_camera_at_P1)
         # 用于把当前相机位姿转到 P1 参考坐标系。
@@ -293,6 +300,20 @@ class ZedCamera:
             raise RuntimeError(f"[ZED] Opening error / 打开失败: {status}")
 
         print("[ZED] Camera opened. / 相机已打开。")
+
+        try:
+            camera_info = self.zed.get_camera_information()
+            left_cam = camera_info.camera_configuration.calibration_parameters.left_cam
+            self.left_camera_intrinsics = {
+                "fx": float(left_cam.fx),
+                "fy": float(left_cam.fy),
+                "cx": float(left_cam.cx),
+                "cy": float(left_cam.cy),
+            }
+            print(f"[ZED] Left camera intrinsics: {self.left_camera_intrinsics}")
+        except Exception as e:
+            self.left_camera_intrinsics = None
+            print(f"[ZED WARN] Failed to read camera intrinsics: {e}")
 
         try:
             tracking_params = sl.PositionalTrackingParameters()
@@ -336,6 +357,9 @@ class ZedCamera:
             bgr = image
 
         return bgr, self.point_cloud
+
+    def get_left_camera_intrinsics(self):
+        return self.left_camera_intrinsics
 
     def get_camera_pose_world(self):
         """
@@ -553,7 +577,12 @@ class GreenDefectDetector:
 
         return np.mean(inliers, axis=0).astype(np.float64)
 
-    def detect(self, bgr_image: np.ndarray, point_cloud: sl.Mat) -> DefectDetectionResult:
+    def detect(
+        self,
+        bgr_image: np.ndarray,
+        point_cloud: sl.Mat,
+        point_filter=None,
+    ) -> DefectDetectionResult:
         hsv = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
 
         mask = cv2.inRange(hsv, LOWER_GREEN, UPPER_GREEN)
@@ -602,45 +631,41 @@ class GreenDefectDetector:
                 point_camera_m=None,
             )
 
-        contour, area, circularity = max(candidates, key=lambda item: item[1])
-        centroid = self.contour_centroid(contour)
+        for contour, area, circularity in sorted(candidates, key=lambda item: item[1], reverse=True):
+            centroid = self.contour_centroid(contour)
 
-        if centroid is None:
+            if centroid is None:
+                continue
+
+            target_mask = np.zeros_like(mask)
+            cv2.drawContours(target_mask, [contour], -1, 255, thickness=-1)
+
+            points_3d, valid_count = self.extract_3d_points_from_mask(target_mask, point_cloud)
+            point_camera_m = self.robust_3d_estimate(points_3d)
+
+            if point_camera_m is None:
+                continue
+
+            if point_filter is not None and not point_filter(point_camera_m):
+                continue
+
             return DefectDetectionResult(
-                found=False,
-                mask=mask,
-                contour=None,
-                centroid_px=None,
-                point_camera_m=None,
-            )
-
-        target_mask = np.zeros_like(mask)
-        cv2.drawContours(target_mask, [contour], -1, 255, thickness=-1)
-
-        points_3d, valid_count = self.extract_3d_points_from_mask(target_mask, point_cloud)
-        point_camera_m = self.robust_3d_estimate(points_3d)
-
-        if point_camera_m is None:
-            return DefectDetectionResult(
-                found=False,
+                found=True,
                 mask=target_mask,
                 contour=contour,
                 centroid_px=centroid,
-                point_camera_m=None,
+                point_camera_m=point_camera_m,
                 area=area,
                 circularity=circularity,
                 valid_3d_points=valid_count,
             )
 
         return DefectDetectionResult(
-            found=True,
-            mask=target_mask,
-            contour=contour,
-            centroid_px=centroid,
-            point_camera_m=point_camera_m,
-            area=area,
-            circularity=circularity,
-            valid_3d_points=valid_count,
+            found=False,
+            mask=mask,
+            contour=None,
+            centroid_px=None,
+            point_camera_m=None,
         )
 
 

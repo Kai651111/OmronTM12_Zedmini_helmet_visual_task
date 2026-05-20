@@ -151,6 +151,62 @@ CAMERA_ROTATION_MATRIX_TCP = [
 # It still uses the TCP position [x, y, z] and still uses CAMERA_RELATIVE_POSE_TCP.
 USE_BASE_ALIGNED_TCP_ROTATION = True
 
+
+# ============================================================
+# Global ellipsoid detection boundary
+# Global 椭球检测边界
+# ============================================================
+
+# Enable ellipsoid boundary filtering for green sticker detection.
+# 是否启用 global 椭球边界过滤；启用后，只有落在椭球内的绿色 sticker 才算有效。
+ENABLE_ELLIPSOID_BOUNDARY = True
+
+# Ellipsoid top tangent point in robot base/global frame.
+# 椭球最顶点/顶部切点在机器人 base/global 坐标系下的位置。
+# Format / 格式: [x, y, z]
+# Unit / 单位: mm
+ELLIPSOID_TOP_TANGENT_POINT_GLOBAL_MM = [
+    -230.83, 846.96, 1134.75
+]
+
+# Ellipsoid length along global X.
+# 椭球沿 global X 方向的长度。
+# Unit / 单位: mm
+ELLIPSOID_LENGTH_X_MM = 400.0
+
+# Ellipsoid width along global Y.
+# 椭球沿 global Y 方向的宽度。
+# Unit / 单位: mm
+ELLIPSOID_WIDTH_Y_MM = 400.0
+
+# Ellipsoid height along global Z.
+# 椭球沿 global Z 方向的高度。
+# The ellipsoid center z is top_z - height / 2.
+# 椭球中心的 z 坐标会自动计算为 top_z - height / 2。
+# Unit / 单位: mm
+ELLIPSOID_HEIGHT_Z_MM = 350.0
+
+# Boundary adjustment margin added to every semi-axis.
+# 边界调整量；会加到三个半轴上，用于放大/缩小检测边界。
+# Positive expands the boundary; negative shrinks it.
+# 正数放大边界，负数缩小边界。
+# Unit / 单位: mm
+ELLIPSOID_BOUNDARY_MARGIN_MM = 30.0
+
+# Show the ellipsoid projection in preview and capture windows.
+# 是否在 preview 和 capture 画面中显示椭球投影。
+SHOW_ELLIPSOID_PROJECTION = True
+
+# Ellipsoid projection overlay transparency.
+# 椭球投影半透明填充的透明度。
+# Range / 范围: 0.0 transparent / 全透明, 1.0 opaque / 不透明
+ELLIPSOID_PROJECTION_ALPHA = 0.20
+
+# Ellipsoid projection color in OpenCV BGR order.
+# 椭球投影颜色，OpenCV BGR 顺序。
+ELLIPSOID_PROJECTION_COLOR_BGR = [255, 0, 255]
+
+
 # 画笔相对于机械臂末端/TCP 的 6D pose。
 #
 # 先空着；你之后手动填写。
