@@ -48,6 +48,11 @@ from decision import judge_global_points_stability
 
 from marker_compensation import compensate_marker_point_global
 
+from ellipsoid_boundary import (
+    is_ellipsoid_boundary_enabled,
+    is_point_inside_global_ellipsoid,
+)
+
 
 # ============================================================
 # Optional config values / 可选配置项
@@ -680,6 +685,7 @@ def main():
                     point_id=point_id,
                     title=f"Scan point {point_id}",
                     show_mask=False,
+                    T_base_camera=T_base_camera,
                 )
 
             # ------------------------------------------------
@@ -693,6 +699,7 @@ def main():
                 capture_seconds=cfg.CAPTURE_SECONDS_PER_VIEW,
                 show_debug=True,
                 point_id=point_id,
+                T_base_camera=T_base_camera,
             )
 
             print(f"[VISION] success = {estimate.success}")
@@ -724,12 +731,28 @@ def main():
                 T_base_camera=T_base_camera,
             )
 
-            global_points_m.append(p_global_m)
-
             print(
                 "[RESULT] P_global/base = "
                 f"{np.round(p_global_m * 1000.0, 2)} mm"
             )
+
+            if is_ellipsoid_boundary_enabled():
+                inside_boundary, boundary_metric = is_point_inside_global_ellipsoid(
+                    p_global_m
+                )
+                print(
+                    "[BOUNDARY] Ellipsoid metric = "
+                    f"{boundary_metric:.3f} (inside if <= 1.0)"
+                )
+
+                if not inside_boundary:
+                    print("[SKIP] P_global is outside ellipsoid boundary.")
+                    print("[SKIP] P_global 不在椭球检测边界内，跳过。")
+                    continue
+
+                print("[BOUNDARY] P_global is inside ellipsoid boundary.")
+
+            global_points_m.append(p_global_m)
 
         # ----------------------------------------------------
         # 6. Judge global point stability

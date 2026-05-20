@@ -685,12 +685,25 @@ def safe_destroy_window(window_name: str):
     except cv2.error:
         pass
 
+def make_global_ellipsoid_point_filter(T_base_camera):
+    if T_base_camera is None or not is_ellipsoid_boundary_enabled():
+        return None
+
+    def point_filter(point_camera_m):
+        point_global_m = transform_point(T_base_camera, point_camera_m)
+        inside, _ = is_point_inside_global_ellipsoid(point_global_m)
+        return inside
+
+    return point_filter
+
+
 def preview_camera_until_confirm(
     zed: ZedCamera,
     detector: Optional[GreenDefectDetector] = None,
     point_id: int = 0,
     title: str = "Live Preview / 实时预览",
     show_mask: bool = True,
+    T_base_camera: Optional[np.ndarray] = None,
 ):
     """
     Show live ZED preview until user confirms.
@@ -700,6 +713,8 @@ def preview_camera_until_confirm(
     print("[PREVIEW] Adjust camera position while watching the window. / 请看着窗口调整相机位置。")
     print("[PREVIEW] Press Enter / c / Space to continue. / 按 Enter / c / 空格继续。")
     print("[PREVIEW] Press q / ESC to abort. / 按 q / ESC 中断。")
+
+    point_filter = make_global_ellipsoid_point_filter(T_base_camera)
 
     try:
         while True:
@@ -714,7 +729,11 @@ def preview_camera_until_confirm(
             result = None
 
             if detector is not None:
-                result = detector.detect(bgr_image, point_cloud)
+                result = detector.detect(
+                    bgr_image,
+                    point_cloud,
+                    point_filter=point_filter,
+                )
 
                 if result.contour is not None:
                     cv2.drawContours(preview, [result.contour], -1, (0, 255, 0), 2)
@@ -746,6 +765,12 @@ def preview_camera_until_confirm(
                         2,
                         cv2.LINE_AA,
                     )
+
+            draw_ellipsoid_projection_on_image(
+                preview,
+                T_base_camera=T_base_camera,
+                intrinsics=zed.get_left_camera_intrinsics(),
+            )
 
             if zed.T_reference_world is not None:
                 tracking_ok, tracking_state, _, camera_pos = zed.get_camera_pose_reference()
@@ -952,6 +977,7 @@ def capture_defect_position_for_seconds(
     capture_seconds: float = CAPTURE_SECONDS_PER_VIEW,
     show_debug: bool = True,
     point_id: int = 0,
+    T_base_camera: Optional[np.ndarray] = None,
 ) -> CameraEstimate:
     """
     Capture ZED frames for several seconds and estimate defect position.
@@ -971,6 +997,7 @@ def capture_defect_position_for_seconds(
     frame_id = 0
 
     print(f"[VISION] Start capture / 开始采集: point {point_id}, {capture_seconds:.1f}s")
+    point_filter = make_global_ellipsoid_point_filter(T_base_camera)
 
     while True:
         now = time.time()
@@ -989,7 +1016,11 @@ def capture_defect_position_for_seconds(
         tracking_ok, tracking_state, T_ref_camera, camera_pos_ref = zed.get_camera_pose_reference()
         acc, gyro = zed.get_imu_data()
 
-        result = detector.detect(bgr_image, point_cloud)
+        result = detector.detect(
+            bgr_image,
+            point_cloud,
+            point_filter=point_filter,
+        )
 
         Xc = Yc = Zc = None
         Xr = Yr = Zr = None
@@ -1043,6 +1074,12 @@ def capture_defect_position_for_seconds(
 
         if show_debug:
             debug = bgr_image.copy()
+
+            draw_ellipsoid_projection_on_image(
+                debug,
+                T_base_camera=T_base_camera,
+                intrinsics=zed.get_left_camera_intrinsics(),
+            )
 
             if result.contour is not None:
                 cv2.drawContours(debug, [result.contour], -1, (0, 255, 0), 2)
